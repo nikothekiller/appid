@@ -1,0 +1,72 @@
+1. 编写一个基于C99标准的C程序，用于网络中应用的识别；
+2. 通过读取指定的pcap文件来获取报文，针对报文内容进行应用识别；
+3. 遍历可以读取指定目录中的多个pcap文件，有两种情况需要考虑，1.文件是否为pcap文件；2.是否存在子目录，在main.c中做pcap文件的解析和appid_identify函数的调用从而识别出报文的应用结果；
+4.同时需要实现一个函数appid_identify参数有四个分别为报文长度、报文的原始数据、报文的发起方向以及应用识别后的结果应用名称，client用0表示和server用1表示，返回值为识别是否完成是否识别失败等情况，用于编译成库函数供第三方工程使用；
+5. 从函数appid_identify开始后面编码时都需要考虑被多线程同时调用的情况，需要支持多线程同时调用该函数也要能正确识别并返回结果
+6. 需要通过特征串识别http和tls协议识别，之后再做给出规则的应用层应用识别
+7. 能支持HTTP协议的url、host、ua、content-type、cookie、location、referer的匹配，匹配方式为子串或者正则；
+8. 能支持TLS协议中cname、servername字段的读取和匹配，匹配方式是子串或者正则；
+9. 能支持TCP或者UDP协议中负载内容的匹配，支持偏移设置，支持ip和端口匹配；
+10. 应用识别需要尽可能的快，通过最少的报文分析，完成应用识别；
+11. 不需要考虑会话，识别都是在一个包中完成，且最长匹配范围不超过256字节；
+12. 不需要解析HTTP或者TLS报文，仅通过规则定义的前缀字符来识别HTTP或者TLS协议中的各个字段，在构建AC状态机时应该组合所有规则中得字符串和十六进字符串前缀和规则内容，一次性匹配出识别结果；
+13. 将规则中得字符串和十六进制得字符串内容使用一个ac自动机进行一次性匹配，然后再筛选出命中规则，不要进行多此ac自动机匹配实现匹配逻辑；
+14. 规则支持多个条件，并且支持多个条件进行逻辑组合，给出逻辑检查的相关实现代码；
+15. 能够评估出应用识别的性能，以方便对应用识别引擎进行性能调优；应用识别引擎及其对应识别规则的要求：
+
+1. 我会提供所有的规则详细定义示例，以下是对详细规则进行的描述和讲解，从而更好的实现该应用识别引擎
+2. 一条规则中的不同字段(field)之间由竖线隔开
+3. 规则第一列为应用名字，是数字类型,多条规则可以是同一个应用名称，即相同应用有多种特征
+4. 规则中udp、tcp、quic、tls、http为基础协议，除http、tls、QUIC协议外其它的基础协议都通过报文中ip层信息进行确定，http、tls、QUIC协议需要通过特征串来识别出http、tls、QUIC协议
+5. port为端口
+6. ip为知名公网ip, ip可以为单个，也可能为多个，多个以逗号隔开代表或的关系
+7. pkt_dir代表报文方向，client用0表示和server用1表示，没有该字段的规则表示双向报文都要做识别
+8. payload_len代表报文传输层负载的长度
+9. payload代表在在负载中查找，可以有多个匹配段，以[]为一个元素，中括号之间以逗号隔开表示或的关系，以&隔开的代表与的关系，每个元素内部第一个参数为查找起始位置，第二个参数为查找长度，第三个参数代表要查找的内容
+10. logic字段代表规则中竖线之间除了第一列与第二列之外得字段间的关系有两种，AND和OR，AND代表与，OR代表或，缺省代表AND
+11. 单个字段内以逗号隔开代表支持多种并列规则，代表或的关系，每一个字段内部的规则可以添加!字符代表非得逻辑关系
+12. url字段代表http协议得uri，有可能是asc编码也可能是URL编码
+13. ua代表http协议得user-agent字段
+14. host字段代表http协议得host字段
+15. servername代表tls协议中client hello得sni
+16. content-type代表http协议中相应包中得content-type字段
+16. 字段中得.*开头的代表需要正则匹配
+
+
+#tcp/udp payload
+26877|udp|payload_len:==23|payload:[0,1,\x0C]|logic:AND
+1033|tcp|payload_len:>0|payload:[0,8,\x7B\x21\x00\x7C\x18\x00\x00\x00]|logic:AND
+25210|tcp|payload_len:>38|payload:[41,9,weixinnum]|logic:AND
+24724|tcp|port:80|pkt_dir:0|payload_len:>7|payload:[0,3,\xD1\x00\x00],[4,3,\x00\x00\x00]|logic:AND
+24724|tcp|port:!80|pkt_dir:1|payload_len:>7|payload:[0,3,\xD1\x00\x00],[4,3,\x00\x00\x00]|logic:AND
+24724|tcp|port:80|pkt_dir:1|payload_len:>7|payload:![0,3,\xD1\x00\x00]&([4,3,\x00\x00\x00],[4,3,\x03\x00\x00])|logic:AND
+4010|http|port:8083|url:.*httpdns/v2.*|host:120.92.33.171|logic:OR
+4010|http|port:8083,666,7777,8888|url:.*httpdns/v2.*|host:120.92.33.171|logic:OR
+
+#port only
+25146|tcp|port:6412
+
+#ip port
+24802|tcp|port:443|ip:47.92.198.232|logic:AND
+24802|tcp|port:443|ip:47.92.198.232,47.92.198.233|logic:AND
+
+#quic sni
+26877|gquic|servername:shequ.sports.qq.com
+
+#ssl servername
+26877|tls|servername:app.sports.qq.com
+
+#http ua
+26877|http|ua:QQSportsV3
+1033|http|ua:%E4%BC%98%E9%85%B7
+
+#http multi regex
+25637|tls|servername:.*sunlogin.oray.com
+2840|http|url:.*zhihu.*
+24325|http|url:(.*zqlive.*,.*ttsing.*)
+
+#http host
+26877|http|host:sports3.gtimg.com
+
+#http content-type
+6666|http|content-type:application/octet-stream
